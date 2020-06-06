@@ -1,0 +1,91 @@
+public List<Map<String, Object>> optimizeAllocationVM(List<? extends ContainerVm> vmList) {
+
+    	
+   	ExecutionTimeMeasurer.start("optimizeAllocationTotal");
+	    List<Map<String, Object>> migrationMap = new LinkedList<Map<String, Object>>();
+
+	//1.Host selection
+   ExecutionTimeMeasurer.start("optimizeAllocationHostSelection");
+    List<PowerContainerHostUtilizationHistory> overUtilizedHosts = getOverUtilizedHosts();
+    List<PowerContainerHost> switchedOffHosts = getSwitchedOffHosts();
+    
+    Set<PowerContainerHost> excludedHostsForFindingUnderUtilizedHost = new HashSet<>();
+    excludedHostsForFindingUnderUtilizedHost.addAll(overUtilizedHosts);
+    excludedHostsForFindingUnderUtilizedHost.addAll(switchedOffHosts);
+   
+    List<PowerContainerHost> underUtilizedHost = getUnderUtilizedHostLIST(excludedHostsForFindingUnderUtilizedHost);
+    excludedHostsForFindingUnderUtilizedHost.addAll(underUtilizedHost);
+    getExecutionTimeHistoryHostSelection().add(
+    ExecutionTimeMeasurer.end("optimizeAllocationHostSelection"));
+    printOverUtilizedHosts(overUtilizedHosts);
+    printUnderUtilizedHosts(underUtilizedHost);
+    
+    List<PowerContainerHost> overandunderutilizedHost = new ArrayList<>(underUtilizedHost);
+    overandunderutilizedHost.addAll(overUtilizedHosts);
+    if(!overandunderutilizedHost.isEmpty()) {
+    saveAllocation();
+   
+    //2.vm selection
+    ExecutionTimeMeasurer.start("optimizeAllocationVmSelection");
+    List<? extends ContainerVm> vmsToMigratefromOLhost = getVmsToMigrateFromHosts(overUtilizedHosts);
+    List<? extends ContainerVm> vmsToMigratefromULHost = getVmsToMigrateFromUnderUtilizedHostLIST(underUtilizedHost);
+    List<ContainerVm> VmnewList =new ArrayList<>(vmsToMigratefromOLhost);
+    VmnewList.addAll(vmsToMigratefromULHost);
+    
+    //3.Desision for migration using topsis
+   List<ContainerVm> vmsTOmigrate = PowerContainerVmAllocationPolicyMigrationLocalRegressionPSBFD.
+ 		  										VmMigrationDesisionUsingTopsis (VmnewList,overandunderutilizedHost );
+    
+    //remove selected VMs from list
+    boolean VmsInUlHost = vmsToMigratefromOLhost.removeAll(vmsTOmigrate); 
+    boolean VmsInOlHost = vmsToMigratefromULHost.removeAll(vmsTOmigrate);
+    
+    //VM placement
+    List<Map<String, Object>> migrationMap1 = getNewVmPlacementFromUnderUtilizedHost(vmsTOmigrate, new HashSet<ContainerHost>(
+    		overandunderutilizedHost));
+    migrationMap.addAll(migrationMap1);
+    List<Container> ContainersToMIgrate = new LinkedList<Container>();
+    saveAllocation();
+ 
+    
+   //all containers should be migrate from UL host
+    
+   for(ContainerVm vm : vmsToMigratefromULHost) {
+    	for(Container container:vm.getContainerList()) {
+    		ContainersToMIgrate.add(container);
+    	}
+    }
+    
+    for(ContainerHost host : overUtilizedHosts) {
+		List<ContainerVm> temp = new LinkedList<ContainerVm>();
+    	for(ContainerVm vm1: host.getVmList()){
+    		for(ContainerVm vm : vmsTOmigrate) {
+    			if(vm.getId() == vm1.getId()) {
+    				temp.add(vm1);
+    			}
+    			}
+    		}
+    	for(ContainerVm a : temp) {
+    		host.containerVmDestroy(a);
+    	}
+    	}
+  
+    //container selection in Overloaded-host
+    
+    List<? extends Container> containersToMigrate = getContainersToMigrateFromHosts(overUtilizedHosts);
+    List<Container> AllContainerstoMigrate = new LinkedList<Container>(ContainersToMIgrate);
+    AllContainerstoMigrate.addAll(containersToMigrate);
+    
+    
+     // container placement 
+    
+   List<Map<String, Object>> migrationMap2 = getPlacementForLeftContainers(AllContainerstoMigrate, new HashSet<ContainerHost>(
+    		overandunderutilizedHost));
+    migrationMap.addAll(migrationMap2);
+    saveAllocation();
+    restoreAllocation();
+    
+  
+    }	
+    return migrationMap;
+    }
